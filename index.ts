@@ -1,30 +1,52 @@
+// TODO:
+// [ ] make ActorSystem create Actor objects
+// [ ] detect exceptions/terminations of actors
+// [ ] actor supervision (i.e. restart policy)
+
 //
 // ACTOR SYSTEM
 //
 
+interface ActorState {
+  actor: Actor;
+  mailbox: unknown[];
+}
+
+type ActorRef = string;
+
 class ActorSystem {
-  private actors: { [key: string]: Actor } = {};
+  private actors: { [key: string]: ActorState } = {};
   private nextActorId = 0;
 
   public add(actor: Actor): void {
-    const ref = `ACTOR-${this.nextActorId}`;
+    const ref: ActorRef = `ACTOR-${this.nextActorId}`;
     this.nextActorId += 1;
-    this.actors[ref] = actor;
+    this.actors[ref] = { actor, mailbox: [] };
     actor.init(this, ref);
   }
 
-  public schedule(actor: Actor): void {
-    process.nextTick(() => actor.runOnce());
+  public schedule(ref: ActorRef): void {
+    process.nextTick(() => {
+      const actorState = this.actors[ref];
+      if (actorState === undefined) {
+        // send error event to root actor
+        return;
+      }
+      const message = actorState.mailbox.shift();
+      if (message !== undefined) {
+        actorState.actor.onReceive(message);
+      }
+    });
   }
 
   public send(ref: string, message: unknown): void {
-    const actor = this.actors[ref];
-    if (actor === undefined) {
+    const actorState = this.actors[ref];
+    if (actorState === undefined) {
       // send dead-letter to root actor
       throw Error(`Sending to unknown actor [${ref}]`);
     }
-    actor.push(message);
-    this.schedule(actor);
+    actorState.mailbox.push(message);
+    this.schedule(ref);
   }
 }
 
@@ -33,9 +55,7 @@ abstract class Actor {
   private _ref!: string;
   private _system!: ActorSystem;
 
-  private inbox: unknown[] = [];
-
-  public ref(): string {
+  public ref(): ActorRef {
     if (!this._isInitialized) {
       throw Error("Actor not initialized");
     }
@@ -46,24 +66,13 @@ abstract class Actor {
     return this._system;
   }
 
-  public init(system: ActorSystem, ref: string): void {
+  public init(system: ActorSystem, ref: ActorRef): void {
     if (this._isInitialized) {
       throw Error("Actor already initialized");
     }
     this._system = system;
     this._ref = ref;
     this._isInitialized = true;
-  }
-
-  public push(message: unknown): void {
-    this.inbox.push(message);
-  }
-
-  public runOnce(): void {
-    const message = this.inbox.shift();
-    if (message !== undefined) {
-      this.onReceive(message);
-    }
   }
 
   public abstract onReceive(message: unknown): void;
@@ -85,7 +94,7 @@ const Message = t.type({
 class Actor1 extends Actor {
   public onReceive(message: unknown): void {
     either.map(Message.decode(message), ({ sender }) => {
-      console.log("A1:PING");
+      console.log(`${this.ref()}:PING`);
       this.system().send(sender, Message.encode({ sender: this.ref() }));
     });
   }
@@ -94,7 +103,7 @@ class Actor1 extends Actor {
 class Actor2 extends Actor {
   public onReceive(message: unknown): void {
     either.map(Message.decode(message), ({ sender }) => {
-      console.log("A2:PONG");
+      console.log(`${this.ref()}:PONG`);
       this.system().send(sender, Message.encode({ sender: this.ref() }));
     });
   }
