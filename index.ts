@@ -6,22 +6,55 @@
 // ACTOR SYSTEM
 //
 
+type ActorRef = string;
+
+interface ChildActorState extends ActorState {
+  // children always have a parent
+  parent: ActorRef;
+}
+
+abstract class Actor {
+  public constructor(
+    private readonly _system: ActorSystem,
+    private readonly _ref: ActorRef
+  ) {}
+
+  public ref(): ActorRef {
+    return this._ref;
+  }
+
+  protected system(): ActorSystem {
+    return this._system;
+  }
+
+  public abstract onReceive(message: unknown): void;
+}
+
+class RootActor extends Actor {
+  public onReceive(message: unknown): void {
+    console.log(`RootActor received ${message}`);
+  }
+}
+
 interface ActorState {
   actor: Actor;
   mailbox: unknown[];
 }
 
-type ActorRef = string;
-
 class ActorSystem {
-  private actors: { [key: string]: ActorState } = {};
+  private rootActorRef!: ActorRef;
+  private actors: { [key: string]: ChildActorState } = {};
   private nextActorId = 0;
+
+  constructor() {
+    this.rootActorRef = this.spawn(RootActor);
+  }
 
   public spawn(c: new (_: ActorSystem, __: ActorRef) => Actor): ActorRef {
     const ref: ActorRef = `ACTOR-${this.nextActorId}`;
     this.nextActorId += 1;
     const actor = new c(this, ref);
-    this.actors[ref] = { actor, mailbox: [] };
+    this.actors[ref] = { actor, mailbox: [], parent: this.rootActorRef };
     return ref;
   }
 
@@ -48,23 +81,6 @@ class ActorSystem {
     actorState.mailbox.push(message);
     this.schedule(ref);
   }
-}
-
-abstract class Actor {
-  public constructor(
-    private readonly _system: ActorSystem,
-    private readonly _ref: ActorRef
-  ) {}
-
-  public ref(): ActorRef {
-    return this._ref;
-  }
-
-  protected system(): ActorSystem {
-    return this._system;
-  }
-
-  public abstract onReceive(message: unknown): void;
 }
 
 //
