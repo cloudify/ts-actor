@@ -1,5 +1,4 @@
 // TODO:
-// [ ] make ActorSystem create Actor objects
 // [ ] detect exceptions/terminations of actors
 // [ ] actor supervision (i.e. restart policy)
 
@@ -18,11 +17,12 @@ class ActorSystem {
   private actors: { [key: string]: ActorState } = {};
   private nextActorId = 0;
 
-  public add(actor: Actor): void {
+  public spawn(c: new (_: ActorSystem, __: ActorRef) => Actor): ActorRef {
     const ref: ActorRef = `ACTOR-${this.nextActorId}`;
     this.nextActorId += 1;
+    const actor = new c(this, ref);
     this.actors[ref] = { actor, mailbox: [] };
-    actor.init(this, ref);
+    return ref;
   }
 
   public schedule(ref: ActorRef): void {
@@ -39,7 +39,7 @@ class ActorSystem {
     });
   }
 
-  public send(ref: string, message: unknown): void {
+  public send(ref: ActorRef, message: unknown): void {
     const actorState = this.actors[ref];
     if (actorState === undefined) {
       // send dead-letter to root actor
@@ -51,28 +51,17 @@ class ActorSystem {
 }
 
 abstract class Actor {
-  private _isInitialized = false;
-  private _ref!: string;
-  private _system!: ActorSystem;
+  public constructor(
+    private readonly _system: ActorSystem,
+    private readonly _ref: ActorRef
+  ) {}
 
   public ref(): ActorRef {
-    if (!this._isInitialized) {
-      throw Error("Actor not initialized");
-    }
     return this._ref;
   }
 
   protected system(): ActorSystem {
     return this._system;
-  }
-
-  public init(system: ActorSystem, ref: ActorRef): void {
-    if (this._isInitialized) {
-      throw Error("Actor already initialized");
-    }
-    this._system = system;
-    this._ref = ref;
-    this._isInitialized = true;
   }
 
   public abstract onReceive(message: unknown): void;
@@ -109,11 +98,8 @@ class Actor2 extends Actor {
   }
 }
 
-const a1 = new Actor1();
-const a2 = new Actor2();
-
-system.add(a1);
-system.add(a2);
+const a1 = system.spawn(Actor1);
+const a2 = system.spawn(Actor2);
 
 // send Message to a1, from a2
-system.send(a1.ref(), Message.encode({ sender: a2.ref() }));
+system.send(a1, Message.encode({ sender: a2 }));
