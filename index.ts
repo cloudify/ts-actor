@@ -2,15 +2,24 @@
 // [ ] detect exceptions/terminations of actors
 // [ ] actor supervision (i.e. restart policy)
 
+import * as t from "io-ts";
+
 //
 // ACTOR SYSTEM
 //
 
 type ActorRef = string;
 
+const Terminated = t.interface({
+  type: t.literal("TERMINATED"),
+  ref: t.string,
+});
+
 interface ChildActorState extends ActorState {
   // children always have a parent
   parent: ActorRef;
+  // actors that must be informed of this actor lifecycle
+  watchers: Set<ActorRef>;
 }
 
 abstract class Actor {
@@ -25,6 +34,10 @@ abstract class Actor {
 
   protected system(): ActorSystem {
     return this._system;
+  }
+
+  protected watch(ref: ActorRef): void {
+    this.system().watch(this.ref(), ref);
   }
 
   public abstract onReceive(message: unknown): void;
@@ -47,14 +60,19 @@ class ActorSystem {
   private nextActorId = 0;
 
   constructor() {
-    this.rootActorRef = this.spawn(RootActor);
+    this.rootActorRef = this.actorOf(RootActor);
   }
 
-  public spawn(c: new (_: ActorSystem, __: ActorRef) => Actor): ActorRef {
+  public actorOf(c: new (_: ActorSystem, __: ActorRef) => Actor): ActorRef {
     const ref: ActorRef = `ACTOR-${this.nextActorId}`;
     this.nextActorId += 1;
     const actor = new c(this, ref);
-    this.actors[ref] = { actor, mailbox: [], parent: this.rootActorRef };
+    this.actors[ref] = {
+      actor,
+      mailbox: [],
+      parent: this.rootActorRef,
+      watchers: new Set(),
+    };
     return ref;
   }
 
@@ -66,8 +84,18 @@ class ActorSystem {
         return;
       }
       const message = actorState.mailbox.shift();
-      if (message !== undefined) {
+      if (message === undefined) {
+        return;
+      }
+      try {
         actorState.actor.onReceive(message);
+      } catch (e) {
+        // onReceive failed
+        const terminated = Terminated.encode({ type: "TERMINATED", ref });
+        actorState.watchers.forEach((watcher) => {
+          this.send(watcher as ActorRef, terminated);
+        });
+        delete this.actors[ref];
       }
     });
   }
@@ -81,41 +109,63 @@ class ActorSystem {
     actorState.mailbox.push(message);
     this.schedule(ref);
   }
+
+  public watch(watcherRef: ActorRef, watchedRef: ActorRef): void {
+    const watchedActor = this.actors[watchedRef];
+    if (watchedActor === undefined) {
+      throw Error(`Watch failed, actor not found [${watchedRef}]`);
+    }
+    watchedActor.watchers.add(watcherRef);
+  }
 }
 
 //
 // EXAMPLE ACTORS
 //
 
-import * as t from "io-ts";
 import { either } from "fp-ts/lib/Either";
 
 const system = new ActorSystem();
 
 const Message = t.type({
-  sender: t.string,
+  replyTo: t.string,
 });
 
 class Actor1 extends Actor {
   public onReceive(message: unknown): void {
-    either.map(Message.decode(message), ({ sender }) => {
+    if (Message.is(message)) {
       console.log(`${this.ref()}:PING`);
-      this.system().send(sender, Message.encode({ sender: this.ref() }));
-    });
+      this.system().send(
+        message.replyTo,
+        Message.encode({ replyTo: this.ref() })
+      );
+    } else if (Terminated.is(message)) {
+      console.log(`Child terminated ${message.ref}`);
+    }
   }
 }
 
 class Actor2 extends Actor {
+  private counter: number = 0;
+
   public onReceive(message: unknown): void {
-    either.map(Message.decode(message), ({ sender }) => {
-      console.log(`${this.ref()}:PONG`);
-      this.system().send(sender, Message.encode({ sender: this.ref() }));
-    });
+    if (Message.is(message)) {
+      console.log(`${this.ref()}:PONG:${this.counter}`);
+      if (this.counter >= 10) {
+        throw Error("FAILURE");
+      }
+      this.counter += 1;
+      this.system().send(
+        message.replyTo,
+        Message.encode({ replyTo: this.ref() })
+      );
+    }
   }
 }
 
-const a1 = system.spawn(Actor1);
-const a2 = system.spawn(Actor2);
+const a1 = system.actorOf(Actor1);
+const a2 = system.actorOf(Actor2);
+system.watch(a1, a2);
 
 // send Message to a1, from a2
-system.send(a1, Message.encode({ sender: a2 }));
+system.send(a1, Message.encode({ replyTo: a2 }));
