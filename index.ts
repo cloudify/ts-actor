@@ -26,7 +26,7 @@ class ActorSystem {
   }
 
   public schedule(ref: ActorRef): void {
-    process.nextTick(() => {
+    setImmediate(() => {
       const actorState = this.actors[ref];
       if (actorState === undefined) {
         // send error event to root actor
